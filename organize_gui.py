@@ -32,8 +32,9 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("760x880")
-        self.resizable(False, False)
+        self.geometry("760x740")
+        self.minsize(700, 680)
+        self.resizable(True, True)
         self.configure(bg=BG)
         self._plan = []
         self._build_ui()
@@ -66,7 +67,8 @@ class App(tk.Tk):
                  font=("微軟正黑體", 14, "bold")).pack(side="left", padx=18, pady=10)
 
         outer = tk.Frame(self, bg=BG)
-        outer.pack(fill="both", expand=True, padx=16, pady=10)
+        # 注意：outer 先建立但暫不 pack，等狀態列與按鈕列 pack 完
+        # （保留好底部空間）之後才 pack，避免 expand 容器把空間佔滿。
 
         # ── 來源資料夾 ──
         c1 = self._card(outer)
@@ -110,10 +112,8 @@ class App(tk.Tk):
         self.flat_frame.pack_forget()
 
         # --- 刪除模式 ---
-        sep = tk.Frame(c2, bg=BORDER, height=1)
-        sep.pack(fill="x", padx=12, pady=8)
         self._label(c2, "▸ 刪除模式（獨立操作，不與整理模式並用）",
-                    bold=True, color=ORANGE).pack(anchor="w", padx=16, pady=(0, 2))
+                    bold=True, color=ORANGE).pack(anchor="w", padx=16, pady=(8, 2))
 
         self.del_mode_var = tk.StringVar(value="none")
         del_modes = [
@@ -135,14 +135,12 @@ class App(tk.Tk):
             warn.pack(anchor="w", padx=28, pady=(2, 0))
 
         # --- 乾跑模式 ---
-        sep2 = tk.Frame(c2, bg=BORDER, height=1)
-        sep2.pack(fill="x", padx=12, pady=8)
         self.dryrun_var = tk.BooleanVar(value=True)
         cb = tk.Checkbutton(c2, text="乾跑模式（Dry Run）：勾選時按「執行」只會模擬並顯示結果，不會真的搬移／刪除檔案",
                             variable=self.dryrun_var, bg=CARD, font=FONT_B,
                             activebackground=CARD, selectcolor=ACCENT_LIGHT,
                             fg=ACCENT)
-        cb.pack(anchor="w", padx=16, pady=(0, 8))
+        cb.pack(anchor="w", padx=16, pady=(8, 8))
 
         # ── 副檔名篩選 ──
         c3 = self._card(outer)
@@ -169,7 +167,7 @@ class App(tk.Tk):
         sb.pack(side="right", fill="y")
         self.log = tk.Text(lf, font=FONT_MONO, yscrollcommand=sb.set,
                            bg="#FAFAF8", relief="solid", bd=1, wrap="none",
-                           state="disabled")
+                           height=8, state="disabled")
         self.log.pack(fill="both", expand=True)
         sb.config(command=self.log.yview)
         self.log.tag_configure("ok", foreground=GREEN)
@@ -180,17 +178,22 @@ class App(tk.Tk):
         self.progress = ttk.Progressbar(c4, mode="determinate")
         self.progress.pack(fill="x", padx=12, pady=(0, 10))
 
-        # ── 按鈕列 ──
-        brow = tk.Frame(outer, bg=BG)
-        brow.pack(fill="x", pady=(0, 4))
+        # ── 狀態列（先 pack，固定在最底部）──
+        self.status_var = tk.StringVar(value="請先選擇來源資料夾，再按「預覽」")
+        tk.Label(self, textvariable=self.status_var, bg=BG,
+                 fg=GRAY, font=FONT_SMALL, anchor="w").pack(
+            side="bottom", fill="x", padx=16, pady=(0, 8))
+
+        # ── 按鈕列（pack 在狀態列之上）──
+        brow = tk.Frame(self, bg=BG)
+        brow.pack(side="bottom", fill="x", padx=16, pady=(0, 4))
         self._btn(brow, "🔍  預覽", self._preview, width=14).pack(side="left")
         self._btn(brow, "✅  執行", self._execute, color=GREEN, width=14).pack(side="left", padx=8)
         self._btn(brow, "🗑  清除清單", self._clear, color=GRAY, width=12).pack(side="right")
 
-        # ── 狀態列 ──
-        self.status_var = tk.StringVar(value="請先選擇來源資料夾，再按「預覽」")
-        tk.Label(self, textvariable=self.status_var, bg=BG,
-                 fg=GRAY, font=FONT_SMALL, anchor="w").pack(fill="x", padx=16, pady=(0, 8))
+        # outer 最後才 pack，此時狀態列與按鈕列已經保留好底部空間，
+        # outer（含可伸縮的預覽區）只會佔用剩餘空間。
+        outer.pack(fill="both", expand=True, padx=16, pady=10)
 
     # ── 紀錄區操作 ─────────────────────────────────────────────
     def _log_clear(self):
