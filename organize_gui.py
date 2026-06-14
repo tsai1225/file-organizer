@@ -175,7 +175,7 @@ class App(tk.Tk):
         if not HAS_SEND2TRASH:
             warn = self._label(
                 c2,
-                "⚠ 未安裝 send2trash，資源回收桶功能停用。請執行：pip install send2trash",
+                "提示：未安裝 send2trash 時，Windows 版會改用系統 Shell API 移到資源回收桶。",
                 color="#993C1D", size=9)
             warn.pack(anchor="w", padx=28, pady=(2, 0))
 
@@ -278,15 +278,29 @@ class App(tk.Tk):
             btn.config(state=state)
 
     # ── 事件 ────────────────────────────────────────────────────
+    def _normalize_path(self, path):
+        """
+        Windows 的檔案對話框有時會回傳 C:/Users/... 這種斜線格式；
+        send2trash 在加上 \\?\ 長路徑前綴時，若混用 / 和 \\，
+        可能變成 \\?\C:/Users/... 而造成 Errno 3 找不到路徑。
+        因此所有實際操作前都統一成 Windows 可接受的標準路徑。
+        """
+        if path is None:
+            return ""
+        p = os.path.abspath(os.path.normpath(os.fspath(path)))
+        if os.name == "nt":
+            p = p.replace("/", "\\")
+        return p
+
     def _browse_src(self):
         d = filedialog.askdirectory(title="選擇來源資料夾")
         if d:
-            self.src_var.set(d)
+            self.src_var.set(self._normalize_path(d))
 
     def _browse_dst(self):
         d = filedialog.askdirectory(title="選擇目的地資料夾")
         if d:
-            self.dst_var.set(d)
+            self.dst_var.set(self._normalize_path(d))
 
     def _invalidate_plan(self):
         # 模式、來源或篩選條件變更後，舊預覽清單可能已不準確。
@@ -329,9 +343,10 @@ class App(tk.Tk):
         return exts
 
     def _scan_files(self, src, exts):
+        src = self._normalize_path(src)
         files = []
         for f in os.listdir(src):
-            fp = os.path.join(src, f)
+            fp = self._normalize_path(os.path.join(src, f))
             if not os.path.isfile(fp):
                 continue
             if exts is None or os.path.splitext(f)[1].lower() in exts:
@@ -376,7 +391,9 @@ class App(tk.Tk):
                     "label": f"{fpath}\n      →  {dst_path}",
                 })
         elif mode == "flat":
-            dst_root = self.dst_var.get().strip()
+            dst_root = self._normalize_path(self.dst_var.get().strip())
+            if dst_root:
+                self.dst_var.set(dst_root)
             if not dst_root:
                 messagebox.showerror("錯誤", "平鋪模式需要指定目的地資料夾。")
                 return None
@@ -394,16 +411,19 @@ class App(tk.Tk):
         return plan
 
     def _unique_path(self, folder, fname):
+        folder = self._normalize_path(folder)
         base, ext = os.path.splitext(fname)
-        candidate = os.path.join(folder, fname)
+        candidate = self._normalize_path(os.path.join(folder, fname))
         n = 1
         while os.path.exists(candidate):
-            candidate = os.path.join(folder, f"{base}({n}){ext}")
+            candidate = self._normalize_path(os.path.join(folder, f"{base}({n}){ext}"))
             n += 1
         return candidate
 
     def _ensure_plan(self, show_perm_warning=True):
-        src = self.src_var.get().strip()
+        src = self._normalize_path(self.src_var.get().strip())
+        if src:
+            self.src_var.set(src)
         if not src or not os.path.isdir(src):
             messagebox.showerror("錯誤", "請先選擇有效的來源資料夾。")
             return False
@@ -509,6 +529,71 @@ class App(tk.Tk):
         self._set_buttons_enabled(False)
         threading.Thread(target=self._run_plan, daemon=True).start()
 
+    def _send_to_recycle_bin(self, path):
+        """將檔案移到資源回收桶。
+
+        v5 修正重點：先把 C:/Users/... 統一成 C:\\Users\\...，
+        避免 send2trash 內部產生 \\?\C:/Users/... 這種 Windows 不接受的長路徑格式。
+        若 send2trash 仍失敗，Windows 版會退回使用 Shell API。
+        """
+        p = self._normalize_path(path)
+
+        first_error = None
+        if HAS_SEND2TRASH:
+            try:
+                send2trash(p)
+                return
+            except Exception as e:
+                first_error = e
+                if os.name != "nt":
+                    raise
+
+        if os.name == "nt":
+            # Windows Shell API：FO_DELETE + FOF_ALLOWUNDO = 移到資源回收桶。
+            import ctypes
+            from ctypes import wintypes
+
+            FO_DELETE = 3
+            FOF_ALLOWUNDO = 0x0040
+            FOF_NOCONFIRMATION = 0x0010
+            FOF_SILENT = 0x0004
+            FOF_NOERRORUI = 0x0400
+
+            class SHFILEOPSTRUCTW(ctypes.Structure):
+                _fields_ = [
+                    ("hwnd", wintypes.HWND),
+                    ("wFunc", wintypes.UINT),
+                    ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR),
+                    ("fFlags", wintypes.USHORT),
+                    ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", wintypes.LPVOID),
+                    ("lpszProgressTitle", wintypes.LPCWSTR),
+                ]
+
+            op = SHFILEOPSTRUCTW()
+            op.hwnd = None
+            op.wFunc = FO_DELETE
+            op.pFrom = p + "\0\0"
+            op.pTo = None
+            op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+            op.fAnyOperationsAborted = False
+            op.hNameMappings = None
+            op.lpszProgressTitle = None
+
+            result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+            if result != 0:
+                if first_error is not None:
+                    raise RuntimeError(f"send2trash 失敗：{first_error}；Shell API 也失敗，錯誤碼：{result}")
+                raise RuntimeError(f"Shell API 移到資源回收桶失敗，錯誤碼：{result}")
+            if op.fAnyOperationsAborted:
+                raise RuntimeError("移到資源回收桶操作被系統中止。")
+            return
+
+        if first_error is not None:
+            raise first_error
+        raise RuntimeError("目前環境無法使用資源回收桶功能。")
+
     def _run_plan(self):
         ok = 0
         err = 0
@@ -525,22 +610,24 @@ class App(tk.Tk):
             try:
                 action = item["action"]
                 if action == "move":
-                    dst_dir = os.path.dirname(item["dst"])
+                    src_path = self._normalize_path(item["src"])
+                    dst_path = self._normalize_path(item["dst"])
+                    dst_dir = os.path.dirname(dst_path)
                     os.makedirs(dst_dir, exist_ok=True)
-                    shutil.move(item["src"], item["dst"])
-                    if os.path.exists(item["src"]) or not os.path.exists(item["dst"]):
+                    shutil.move(src_path, dst_path)
+                    if os.path.exists(src_path) or not os.path.exists(dst_path):
                         raise RuntimeError("移動後檢查失敗：來源仍存在或目的地不存在。")
                     self.after(0, self._log_write,
                                f"✓ 已整理：{item['src']}\n    →  {item['dst']}", "ok")
                 elif action == "recycle":
-                    send2trash(item["src"])
-                    # send2trash 正常成功後，原路徑應不存在；若還存在，就不要回報成功。
+                    self._send_to_recycle_bin(item["src"])
+                    # 正常成功後，原路徑應不存在；若還存在，就不要回報成功。
                     if os.path.exists(item["src"]):
                         raise RuntimeError("已呼叫資源回收桶功能，但原檔案仍存在，可能是系統權限、同步資料夾或磁碟回收桶設定造成。")
                     self.after(0, self._log_write,
                                f"✓ 已移至資源回收桶：{item['src']}", "ok")
                 elif action == "perm":
-                    os.remove(item["src"])
+                    os.remove(self._normalize_path(item["src"]))
                     if os.path.exists(item["src"]):
                         raise RuntimeError("刪除後檢查失敗：原檔案仍存在。")
                     self.after(0, self._log_write,
