@@ -19,8 +19,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+      - name: Install dependencies
+        run: pip install pyinstaller send2trash
 
       - name: Build EXE
         run: pyinstaller --onefile --windowed --name FileOrganizer organize_gui.py
