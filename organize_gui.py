@@ -162,8 +162,15 @@ class App(tk.Tk):
         for txt, val in del_modes:
             rb = tk.Radiobutton(c2, text=txt, variable=self.del_mode_var, value=val,
                                 bg=CARD, font=FONT, activebackground=CARD,
-                                selectcolor=ACCENT_LIGHT, fg="#1A1A18")
+                                selectcolor=ACCENT_LIGHT, fg="#1A1A18",
+                                command=self._on_delete_mode_change)
             rb.pack(anchor="w", padx=28)
+
+        self.mode_hint_lbl = self._label(
+            c2,
+            "提示：刪除模式若不是「不刪除」，程式會以刪除模式為主，不會同時執行上方整理模式。",
+            color=GRAY, size=9)
+        self.mode_hint_lbl.pack(anchor="w", padx=28, pady=(2, 0))
 
         if not HAS_SEND2TRASH:
             warn = self._label(
@@ -281,11 +288,32 @@ class App(tk.Tk):
         if d:
             self.dst_var.set(d)
 
+    def _invalidate_plan(self):
+        # 模式、來源或篩選條件變更後，舊預覽清單可能已不準確。
+        self._plan = []
+        if hasattr(self, "count_lbl"):
+            self.count_lbl.config(text="")
+        if hasattr(self, "progress"):
+            self.progress.config(value=0)
+        if hasattr(self, "status_var"):
+            self.status_var.set("設定已變更，請重新按「預覽」或「乾跑測試」。")
+
     def _on_mode_change(self):
         if self.mode_var.get() == "flat":
             self.flat_frame.pack(fill="x", padx=28, pady=(2, 8))
         else:
             self.flat_frame.pack_forget()
+        self._invalidate_plan()
+
+    def _on_delete_mode_change(self):
+        self._invalidate_plan()
+        dm = self.del_mode_var.get()
+        if dm == "none":
+            self.status_var.set("目前為正常整理模式。請按「預覽」確認清單。")
+        elif dm == "recycle":
+            self.status_var.set("目前為移到資源回收桶模式。若乾跑模式仍勾選，只會模擬，不會真的移動檔案。")
+        elif dm == "perm":
+            self.status_var.set("目前為直接刪除模式。若乾跑模式仍勾選，只會模擬，不會真的刪除檔案。")
 
     def _parse_exts(self):
         raw = self.ext_var.get().strip()
@@ -427,9 +455,9 @@ class App(tk.Tk):
     def _execute_dry_run(self):
         if self._running:
             return
-        if not self._plan:
-            if not self._ensure_plan(show_perm_warning=False):
-                return
+        # 每次都依目前畫面設定重新建立清單，避免使用者預覽後改了模式卻沿用舊清單。
+        if not self._ensure_plan(show_perm_warning=False):
+            return
         self._simulate_plan()
 
     def _simulate_plan(self):
@@ -438,7 +466,7 @@ class App(tk.Tk):
             f"=== 乾跑模式模擬結果（共 {len(self._plan)} 個檔案，未執行任何操作）===\n",
             "dim")
         for item in self._plan:
-            self._log_write("（模擬）" + item["label"], "dim")
+            self._log_write("（模擬，未實際執行）" + item["label"], "dim")
         self.count_lbl.config(text=f"共 {len(self._plan)} 個檔案")
         self.progress.config(value=0, maximum=max(len(self._plan), 1))
         self.status_var.set("乾跑測試完成：只是模擬結果，沒有搬移或刪除任何檔案。")
@@ -446,9 +474,9 @@ class App(tk.Tk):
     def _execute_real(self):
         if self._running:
             return
-        if not self._plan:
-            if not self._ensure_plan(show_perm_warning=True):
-                return
+        # 每次正式執行都依目前畫面設定重新建立清單，避免模式切換後沿用舊預覽。
+        if not self._ensure_plan(show_perm_warning=True):
+            return
 
         dm = self.del_mode_var.get()
 
@@ -500,14 +528,21 @@ class App(tk.Tk):
                     dst_dir = os.path.dirname(item["dst"])
                     os.makedirs(dst_dir, exist_ok=True)
                     shutil.move(item["src"], item["dst"])
+                    if os.path.exists(item["src"]) or not os.path.exists(item["dst"]):
+                        raise RuntimeError("移動後檢查失敗：來源仍存在或目的地不存在。")
                     self.after(0, self._log_write,
-                               f"✓ {item['src']}\n    →  {item['dst']}", "ok")
+                               f"✓ 已整理：{item['src']}\n    →  {item['dst']}", "ok")
                 elif action == "recycle":
                     send2trash(item["src"])
+                    # send2trash 正常成功後，原路徑應不存在；若還存在，就不要回報成功。
+                    if os.path.exists(item["src"]):
+                        raise RuntimeError("已呼叫資源回收桶功能，但原檔案仍存在，可能是系統權限、同步資料夾或磁碟回收桶設定造成。")
                     self.after(0, self._log_write,
                                f"✓ 已移至資源回收桶：{item['src']}", "ok")
                 elif action == "perm":
                     os.remove(item["src"])
+                    if os.path.exists(item["src"]):
+                        raise RuntimeError("刪除後檢查失敗：原檔案仍存在。")
                     self.after(0, self._log_write,
                                f"✓ 已永久刪除：{item['src']}", "ok")
                 ok += 1
