@@ -2,6 +2,13 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os, shutil, threading
 
+# send2trash: 移到資源回收桶（若未安裝則停用該功能）
+try:
+    from send2trash import send2trash
+    HAS_SEND2TRASH = True
+except ImportError:
+    HAS_SEND2TRASH = False
+
 APP_TITLE = "檔案整理工具"
 BG = "#F8F8F6"
 CARD = "#FFFFFF"
@@ -9,12 +16,14 @@ ACCENT = "#5348B7"
 ACCENT_LIGHT = "#EEEDFE"
 GREEN = "#0F6E56"
 RED = "#993C1D"
+ORANGE = "#B75348"
 GRAY = "#5F5E5A"
 BORDER = "#D3D1C7"
 FONT = ("微軟正黑體", 10)
 FONT_B = ("微軟正黑體", 10, "bold")
 FONT_H = ("微軟正黑體", 13, "bold")
 FONT_SMALL = ("微軟正黑體", 9)
+FONT_MONO = ("Consolas", 9)
 
 DEFAULT_EXTS = ".pdf, .docx, .xlsx, .doc, .xls"
 
@@ -23,309 +32,403 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("640x720")
+        self.geometry("760x880")
         self.resizable(False, False)
         self.configure(bg=BG)
         self._plan = []
         self._build_ui()
 
+    # ── 通用卡片容器 ────────────────────────────────────────────
     def _card(self, parent, **kw):
-        return tk.Frame(parent, bg=CARD, relief="flat",
-                        highlightbackground=BORDER, highlightthickness=1, **kw)
+        f = tk.Frame(parent, bg=CARD, bd=1, relief="flat",
+                     highlightbackground=BORDER, highlightthickness=1, **kw)
+        return f
 
+    def _label(self, parent, text, bold=False, color=None, size=10, **kw):
+        font = ("微軟正黑體", size, "bold") if bold else ("微軟正黑體", size)
+        return tk.Label(parent, text=text, bg=parent["bg"],
+                        fg=color or "#1A1A18", font=font, **kw)
+
+    def _btn(self, parent, text, cmd, color=ACCENT, fg="white", width=12, **kw):
+        b = tk.Button(parent, text=text, command=cmd,
+                      bg=color, fg=fg, activebackground=color,
+                      font=FONT_B, relief="flat", bd=0,
+                      padx=10, pady=5, cursor="hand2", width=width, **kw)
+        return b
+
+    # ── UI 建構 ─────────────────────────────────────────────────
     def _build_ui(self):
-        # Title bar
+        # 標題
         hdr = tk.Frame(self, bg=ACCENT, height=52)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        tk.Label(hdr, text="  📁 " + APP_TITLE, bg=ACCENT, fg="white",
-                 font=("微軟正黑體", 14, "bold")).pack(side="left", padx=12, pady=10)
+        tk.Label(hdr, text="📂  " + APP_TITLE, bg=ACCENT, fg="white",
+                 font=("微軟正黑體", 14, "bold")).pack(side="left", padx=18, pady=10)
 
-        pad = tk.Frame(self, bg=BG)
-        pad.pack(fill="both", expand=True, padx=16, pady=12)
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True, padx=16, pady=10)
 
-        # Basic settings card
-        cfg = self._card(pad)
-        cfg.pack(fill="x", pady=(0, 10))
-        tk.Label(cfg, text="基本設定", bg=CARD, fg=ACCENT, font=FONT_H
-                 ).pack(anchor="w", padx=14, pady=(10, 6))
-        tk.Frame(cfg, bg=BORDER, height=1).pack(fill="x", padx=14)
-
-        inner = tk.Frame(cfg, bg=CARD)
-        inner.pack(fill="x", padx=14, pady=8)
-
-        self._lbl(inner, 0, "來源資料夾")
+        # ── 來源資料夾 ──
+        c1 = self._card(outer)
+        c1.pack(fill="x", pady=(0, 8))
+        self._label(c1, "來源資料夾", bold=True).pack(anchor="w", padx=12, pady=(10, 4))
+        row1 = tk.Frame(c1, bg=CARD)
+        row1.pack(fill="x", padx=12, pady=(0, 10))
         self.src_var = tk.StringVar()
-        src_row = tk.Frame(inner, bg=CARD)
-        src_row.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=4)
-        tk.Entry(src_row, textvariable=self.src_var, font=FONT,
-                 relief="flat", bg="#F1EFE8", fg="#2C2C2A",
-                 highlightbackground=BORDER, highlightthickness=1, width=34
-                 ).pack(side="left", fill="x", expand=True, ipady=4)
-        tk.Button(src_row, text="瀏覽…", font=FONT_SMALL, bg=ACCENT_LIGHT,
-                  fg=ACCENT, relief="flat", cursor="hand2",
-                  command=self._browse_src).pack(side="left", padx=(6, 0), ipady=4, ipadx=6)
+        tk.Entry(row1, textvariable=self.src_var, font=FONT,
+                 relief="solid", bd=1, bg="#FAFAF8").pack(side="left", fill="x", expand=True)
+        self._btn(row1, "瀏覽…", self._browse_src, width=8).pack(side="left", padx=(6, 0))
 
-        self._lbl(inner, 1, "目標資料夾名稱")
-        self.dest_var = tk.StringVar(value="整理後")
-        tk.Entry(inner, textvariable=self.dest_var, font=FONT,
-                 relief="flat", bg="#F1EFE8", fg="#2C2C2A",
-                 highlightbackground=BORDER, highlightthickness=1, width=24
-                 ).grid(row=1, column=1, sticky="w", padx=(8, 0), pady=4, ipady=4)
+        # ── 作業模式 ──
+        c2 = self._card(outer)
+        c2.pack(fill="x", pady=(0, 8))
+        self._label(c2, "作業模式", bold=True).pack(anchor="w", padx=12, pady=(10, 6))
 
-        self._lbl(inner, 2, "副檔名篩選")
-        ext_row = tk.Frame(inner, bg=CARD)
-        ext_row.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=4)
-        self.ext_var = tk.StringVar(value=DEFAULT_EXTS)
-        tk.Entry(ext_row, textvariable=self.ext_var, font=FONT,
-                 relief="flat", bg="#F1EFE8", fg="#2C2C2A",
-                 highlightbackground=BORDER, highlightthickness=1, width=28
-                 ).pack(side="left", ipady=4)
-        tk.Label(ext_row, text="  留空 = 不篩選", bg=CARD, fg=GRAY,
-                 font=FONT_SMALL).pack(side="left")
-
-        inner.columnconfigure(1, weight=1)
-
-        # Mode selection card
-        mode_card = self._card(pad)
-        mode_card.pack(fill="x", pady=(0, 10))
-        tk.Label(mode_card, text="整理模式", bg=CARD, fg=ACCENT, font=FONT_H
-                 ).pack(anchor="w", padx=14, pady=(10, 6))
-        tk.Frame(mode_card, bg=BORDER, height=1).pack(fill="x", padx=14)
-
+        # --- 整理模式 ---
+        self._label(c2, "▸ 整理模式", bold=True, color=ACCENT).pack(anchor="w", padx=16, pady=(0, 2))
         self.mode_var = tk.StringVar(value="ext")
         modes = [
-            ("ext",  "依副檔名分類",    "每種副檔名建一個子資料夾（PDF/、DOCX/…）"),
-            ("name", "依檔名建立資料夾", "每個檔案各自放入以自身檔名命名的資料夾"),
-            ("flat", "全部集中放入",     "直接放入目標資料夾，不再建子資料夾"),
+            ("依副檔名建立資料夾  （例：.pdf → pdf資料夾）", "ext"),
+            ("依檔名建立資料夾    （每個檔案各自一個資料夾）", "name"),
+            ("平鋪收集到單一資料夾（全部移到同一個目的地）", "flat"),
         ]
-        mode_inner = tk.Frame(mode_card, bg=CARD)
-        mode_inner.pack(fill="x", padx=14, pady=(8, 12))
-        for val, label, desc in modes:
-            row = tk.Frame(mode_inner, bg=CARD)
-            row.pack(anchor="w", pady=3)
-            tk.Radiobutton(row, variable=self.mode_var, value=val,
-                           text=label, font=FONT_B, bg=CARD,
-                           activebackground=CARD, fg="#2C2C2A",
-                           selectcolor=ACCENT_LIGHT).pack(side="left")
-            tk.Label(row, text=f"  {desc}", font=FONT_SMALL,
-                     bg=CARD, fg=GRAY).pack(side="left")
+        for txt, val in modes:
+            rb = tk.Radiobutton(c2, text=txt, variable=self.mode_var, value=val,
+                                bg=CARD, font=FONT, activebackground=CARD,
+                                selectcolor=ACCENT_LIGHT, fg="#1A1A18",
+                                command=self._on_mode_change)
+            rb.pack(anchor="w", padx=28)
 
-        # Dry run option
-        opt_row = tk.Frame(pad, bg=BG)
-        opt_row.pack(fill="x", pady=(0, 8))
+        # 平鋪模式的目的地資料夾
+        self.flat_frame = tk.Frame(c2, bg=CARD)
+        self.flat_frame.pack(fill="x", padx=28, pady=(2, 0))
+        self._label(self.flat_frame, "目的地資料夾：", color=GRAY).pack(side="left")
+        self.dst_var = tk.StringVar()
+        tk.Entry(self.flat_frame, textvariable=self.dst_var, font=FONT,
+                 relief="solid", bd=1, bg="#FAFAF8", width=28).pack(side="left", padx=4)
+        self._btn(self.flat_frame, "瀏覽…", self._browse_dst, width=6).pack(side="left")
+        self.flat_frame.pack_forget()
+
+        # --- 刪除模式 ---
+        sep = tk.Frame(c2, bg=BORDER, height=1)
+        sep.pack(fill="x", padx=12, pady=8)
+        self._label(c2, "▸ 刪除模式（獨立操作，不與整理模式並用）",
+                    bold=True, color=ORANGE).pack(anchor="w", padx=16, pady=(0, 2))
+
+        self.del_mode_var = tk.StringVar(value="none")
+        del_modes = [
+            ("不刪除（正常整理）", "none"),
+            ("移到資源回收桶（可還原）", "recycle"),
+            ("直接刪除（無法復原，請謹慎）", "perm"),
+        ]
+        for txt, val in del_modes:
+            rb = tk.Radiobutton(c2, text=txt, variable=self.del_mode_var, value=val,
+                                bg=CARD, font=FONT, activebackground=CARD,
+                                selectcolor=ACCENT_LIGHT, fg="#1A1A18")
+            rb.pack(anchor="w", padx=28)
+
+        # send2trash 警告（若未安裝）
+        if not HAS_SEND2TRASH:
+            warn = self._label(c2,
+                "⚠ 未安裝 send2trash，資源回收桶功能停用。請執行：pip install send2trash",
+                color="#993C1D", size=9)
+            warn.pack(anchor="w", padx=28, pady=(2, 0))
+
+        # --- 乾跑模式 ---
+        sep2 = tk.Frame(c2, bg=BORDER, height=1)
+        sep2.pack(fill="x", padx=12, pady=8)
         self.dryrun_var = tk.BooleanVar(value=True)
-        f = tk.Frame(opt_row, bg=BG)
-        f.pack(side="left")
-        tk.Checkbutton(f, variable=self.dryrun_var, bg=BG,
-                       activebackground=BG, font=FONT,
-                       text="乾跑模式", fg="#2C2C2A",
-                       selectcolor=ACCENT_LIGHT).pack(side="left")
-        tk.Label(f, text="  （勾選時僅預覽，不移動檔案）", bg=BG,
-                 fg=GRAY, font=FONT_SMALL).pack(side="left")
+        cb = tk.Checkbutton(c2, text="乾跑模式（Dry Run）：勾選時按「執行」只會模擬並顯示結果，不會真的搬移／刪除檔案",
+                            variable=self.dryrun_var, bg=CARD, font=FONT_B,
+                            activebackground=CARD, selectcolor=ACCENT_LIGHT,
+                            fg=ACCENT)
+        cb.pack(anchor="w", padx=16, pady=(0, 8))
 
-        # Buttons
-        btn_row = tk.Frame(pad, bg=BG)
-        btn_row.pack(fill="x", pady=(0, 8))
-        self.preview_btn = tk.Button(btn_row, text="🔍 預覽", font=FONT_B,
-                                     bg=ACCENT_LIGHT, fg=ACCENT, relief="flat",
-                                     cursor="hand2", width=12,
-                                     command=self._run_preview)
-        self.preview_btn.pack(side="left", ipady=7, ipadx=4)
-        self.exec_btn = tk.Button(btn_row, text="▶ 執行整理", font=FONT_B,
-                                  bg=ACCENT, fg="white", relief="flat",
-                                  cursor="hand2", width=14, state="disabled",
-                                  command=self._run_execute)
-        self.exec_btn.pack(side="left", padx=10, ipady=7, ipadx=4)
-        tk.Button(btn_row, text="✕ 清除", font=FONT, bg=BG, fg=GRAY,
-                  relief="flat", cursor="hand2", command=self._clear
-                  ).pack(side="right", ipady=7)
+        # ── 副檔名篩選 ──
+        c3 = self._card(outer)
+        c3.pack(fill="x", pady=(0, 8))
+        self._label(c3, "副檔名篩選（空白 = 全部）", bold=True).pack(anchor="w", padx=12, pady=(10, 4))
+        self.ext_var = tk.StringVar(value=DEFAULT_EXTS)
+        tk.Entry(c3, textvariable=self.ext_var, font=FONT,
+                 relief="solid", bd=1, bg="#FAFAF8").pack(fill="x", padx=12, pady=(0, 10))
+        self._label(c3, "多個副檔名以逗號分隔，例：.pdf, .docx, .xlsx",
+                    color=GRAY, size=9).pack(anchor="w", padx=12, pady=(0, 8))
 
-        # Progress bar
-        self.progress = ttk.Progressbar(pad, mode="determinate", maximum=100)
-        self.progress.pack(fill="x", pady=(0, 8))
+        # ── 預覽 / 執行紀錄 ──
+        c4 = self._card(outer)
+        c4.pack(fill="both", expand=True, pady=(0, 8))
+        hrow = tk.Frame(c4, bg=CARD)
+        hrow.pack(fill="x", padx=12, pady=(10, 4))
+        self._label(hrow, "預覽清單 / 執行紀錄", bold=True).pack(side="left")
+        self.count_lbl = self._label(hrow, "", color=GRAY, size=9)
+        self.count_lbl.pack(side="left", padx=8)
 
-        # Log area
-        log_card = self._card(pad)
-        log_card.pack(fill="both", expand=True)
-        log_hdr = tk.Frame(log_card, bg=CARD)
-        log_hdr.pack(fill="x", padx=14, pady=(10, 4))
-        tk.Label(log_hdr, text="執行記錄", bg=CARD, fg=ACCENT, font=FONT_B).pack(side="left")
-        self.status_lbl = tk.Label(log_hdr, text="", bg=CARD, fg=GRAY, font=FONT_SMALL)
-        self.status_lbl.pack(side="right")
-        tk.Frame(log_card, bg=BORDER, height=1).pack(fill="x", padx=14)
-        log_frame = tk.Frame(log_card, bg=CARD)
-        log_frame.pack(fill="both", expand=True, padx=14, pady=8)
-        self.log = tk.Text(log_frame, font=("Consolas", 9), bg="#F8F8F6",
-                           fg="#2C2C2A", relief="flat", state="disabled",
-                           wrap="word", highlightthickness=0, spacing3=2)
-        sb = ttk.Scrollbar(log_frame, command=self.log.yview)
-        self.log.configure(yscrollcommand=sb.set)
+        lf = tk.Frame(c4, bg=CARD)
+        lf.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        sb = ttk.Scrollbar(lf)
         sb.pack(side="right", fill="y")
+        self.log = tk.Text(lf, font=FONT_MONO, yscrollcommand=sb.set,
+                           bg="#FAFAF8", relief="solid", bd=1, wrap="none",
+                           state="disabled")
         self.log.pack(fill="both", expand=True)
-        for tag, color in [("ok", GREEN), ("err", RED), ("info", ACCENT),
-                            ("warn", "#BA7517"), ("dim", GRAY)]:
-            self.log.tag_configure(tag, foreground=color)
+        sb.config(command=self.log.yview)
+        self.log.tag_configure("ok", foreground=GREEN)
+        self.log.tag_configure("err", foreground=RED)
+        self.log.tag_configure("dim", foreground=GRAY)
 
-    def _lbl(self, parent, row, text):
-        tk.Label(parent, text=text, bg=CARD, fg="#2C2C2A",
-                 font=FONT_B, width=16, anchor="w"
-                 ).grid(row=row, column=0, sticky="w", pady=4)
+        # 進度條
+        self.progress = ttk.Progressbar(c4, mode="determinate")
+        self.progress.pack(fill="x", padx=12, pady=(0, 10))
 
+        # ── 按鈕列 ──
+        brow = tk.Frame(outer, bg=BG)
+        brow.pack(fill="x", pady=(0, 4))
+        self._btn(brow, "🔍  預覽", self._preview, width=14).pack(side="left")
+        self._btn(brow, "✅  執行", self._execute, color=GREEN, width=14).pack(side="left", padx=8)
+        self._btn(brow, "🗑  清除清單", self._clear, color=GRAY, width=12).pack(side="right")
+
+        # ── 狀態列 ──
+        self.status_var = tk.StringVar(value="請先選擇來源資料夾，再按「預覽」")
+        tk.Label(self, textvariable=self.status_var, bg=BG,
+                 fg=GRAY, font=FONT_SMALL, anchor="w").pack(fill="x", padx=16, pady=(0, 8))
+
+    # ── 紀錄區操作 ─────────────────────────────────────────────
+    def _log_clear(self):
+        self.log.config(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.config(state="disabled")
+
+    def _log_write(self, text, tag=None):
+        self.log.config(state="normal")
+        if tag:
+            self.log.insert("end", text + "\n", tag)
+        else:
+            self.log.insert("end", text + "\n")
+        self.log.see("end")
+        self.log.config(state="disabled")
+
+    # ── 事件 ────────────────────────────────────────────────────
     def _browse_src(self):
         d = filedialog.askdirectory(title="選擇來源資料夾")
         if d:
             self.src_var.set(d)
 
-    def _log(self, msg, tag=""):
-        self.log.configure(state="normal")
-        self.log.insert("end", msg + "\n", tag)
-        self.log.see("end")
-        self.log.configure(state="disabled")
+    def _browse_dst(self):
+        d = filedialog.askdirectory(title="選擇目的地資料夾")
+        if d:
+            self.dst_var.set(d)
 
-    def _clear_log(self):
-        self.log.configure(state="normal")
-        self.log.delete("1.0", "end")
-        self.log.configure(state="disabled")
+    def _on_mode_change(self):
+        if self.mode_var.get() == "flat":
+            self.flat_frame.pack(fill="x", padx=28, pady=(2, 8))
+        else:
+            self.flat_frame.pack_forget()
+
+    def _parse_exts(self):
+        raw = self.ext_var.get().strip()
+        if not raw:
+            return None  # None = 不篩選
+        exts = set()
+        for e in raw.split(","):
+            e = e.strip().lower()
+            if e and not e.startswith("."):
+                e = "." + e
+            if e:
+                exts.add(e)
+        return exts
+
+    def _scan_files(self, src, exts):
+        files = []
+        for f in os.listdir(src):
+            fp = os.path.join(src, f)
+            if not os.path.isfile(fp):
+                continue
+            if exts is None or os.path.splitext(f)[1].lower() in exts:
+                files.append((f, fp))
+        return files
+
+    def _build_plan(self, files, src):
+        mode = self.mode_var.get()
+        del_mode = self.del_mode_var.get()
+        plan = []
+
+        if del_mode != "none":
+            action_name = "資源回收桶" if del_mode == "recycle" else "永久刪除"
+            for fname, fpath in files:
+                plan.append({
+                    "src": fpath,
+                    "dst": None,
+                    "action": del_mode,
+                    "label": f"[{action_name}]  {fpath}",
+                })
+        elif mode == "ext":
+            for fname, fpath in files:
+                ext = os.path.splitext(fname)[1].lower().lstrip(".") or "無副檔名"
+                dst_dir = os.path.join(src, ext)
+                dst_path = self._unique_path(dst_dir, fname)
+                plan.append({
+                    "src": fpath,
+                    "dst": dst_path,
+                    "action": "move",
+                    "label": f"{fpath}\n      →  {dst_path}",
+                })
+        elif mode == "name":
+            for fname, fpath in files:
+                stem = os.path.splitext(fname)[0]
+                dst_dir = os.path.join(src, stem)
+                dst_path = self._unique_path(dst_dir, fname)
+                plan.append({
+                    "src": fpath,
+                    "dst": dst_path,
+                    "action": "move",
+                    "label": f"{fpath}\n      →  {dst_path}",
+                })
+        elif mode == "flat":
+            dst_root = self.dst_var.get().strip()
+            if not dst_root:
+                messagebox.showerror("錯誤", "平鋪模式需要指定目的地資料夾。")
+                return None
+            for fname, fpath in files:
+                dst_path = self._unique_path(dst_root, fname)
+                plan.append({
+                    "src": fpath,
+                    "dst": dst_path,
+                    "action": "move",
+                    "label": f"{fpath}\n      →  {dst_path}",
+                })
+        return plan
+
+    def _unique_path(self, folder, fname):
+        base, ext = os.path.splitext(fname)
+        candidate = os.path.join(folder, fname)
+        n = 1
+        while os.path.exists(candidate):
+            candidate = os.path.join(folder, f"{base}({n}){ext}")
+            n += 1
+        return candidate
+
+    def _preview(self):
+        src = self.src_var.get().strip()
+        if not src or not os.path.isdir(src):
+            messagebox.showerror("錯誤", "請先選擇有效的來源資料夾。")
+            return
+
+        # 刪除模式警告
+        dm = self.del_mode_var.get()
+        if dm == "perm":
+            if not messagebox.askyesno("警告",
+                    "已選擇「直接刪除」模式！\n\n之後若取消勾選「乾跑模式」並執行，將永久刪除檔案，無法復原。\n確定繼續預覽嗎？"):
+                return
+        elif dm == "recycle" and not HAS_SEND2TRASH:
+            messagebox.showerror("錯誤",
+                "尚未安裝 send2trash，無法使用資源回收桶功能。\n請執行：pip install send2trash")
+            return
+
+        exts = self._parse_exts()
+        files = self._scan_files(src, exts)
+        if not files:
+            messagebox.showinfo("提示", "來源資料夾中沒有符合條件的檔案。")
+            return
+
+        plan = self._build_plan(files, src)
+        if plan is None:
+            return
+
+        self._plan = plan
+        self._log_clear()
+        self._log_write(f"=== 預覽結果（共 {len(plan)} 個檔案）===\n", "dim")
+        for item in plan:
+            self._log_write(item["label"])
+        self.count_lbl.config(text=f"共 {len(plan)} 個檔案")
+        self.progress.config(value=0, maximum=max(len(plan), 1))
+        self.status_var.set(f"預覽完成，共 {len(plan)} 個檔案。確認無誤後按「執行」"
+                            f"（{'乾跑模式：再按執行也只會模擬' if self.dryrun_var.get() else '注意：將實際執行'}）。")
+
+    def _execute(self):
+        if not self._plan:
+            messagebox.showinfo("提示", "請先按「預覽」產生清單。")
+            return
+
+        dm = self.del_mode_var.get()
+        dry = self.dryrun_var.get()
+
+        # 乾跑模式：只模擬，不動檔案
+        if dry:
+            self._log_clear()
+            self._log_write(f"=== 乾跑模式模擬結果（共 {len(self._plan)} 個檔案，未執行任何操作）===\n", "dim")
+            for item in self._plan:
+                self._log_write("（模擬）" + item["label"], "dim")
+            self.status_var.set("乾跑模式：以上為模擬結果，未搬移或刪除任何檔案。取消勾選「乾跑模式」後可實際執行。")
+            return
+
+        # 非乾跑：執行前確認
+        if dm == "perm":
+            if not messagebox.askyesno("最終確認",
+                    f"即將永久刪除 {len(self._plan)} 個檔案，此動作無法復原！\n\n確定執行嗎？",
+                    icon="warning"):
+                return
+        elif dm == "recycle":
+            if not messagebox.askyesno("確認",
+                    f"即將把 {len(self._plan)} 個檔案移到資源回收桶，確定嗎？"):
+                return
+        else:
+            if not messagebox.askyesno("確認",
+                    f"即將整理 {len(self._plan)} 個檔案，確定執行嗎？"):
+                return
+
+        threading.Thread(target=self._run_plan, daemon=True).start()
+
+    def _run_plan(self):
+        ok = err = 0
+        total = len(self._plan)
+        plan = self._plan
+
+        self._log_clear()
+        self._log_write(f"=== 開始執行（共 {total} 個檔案）===\n", "dim")
+        self.progress.config(value=0, maximum=total)
+
+        for i, item in enumerate(plan, 1):
+            fname = os.path.basename(item["src"])
+            self.status_var.set(f"處理中 {i}/{total}：{fname}")
+            try:
+                action = item["action"]
+                if action == "move":
+                    dst_dir = os.path.dirname(item["dst"])
+                    os.makedirs(dst_dir, exist_ok=True)
+                    shutil.move(item["src"], item["dst"])
+                    self._log_write(f"✓ {item['src']}\n    →  {item['dst']}", "ok")
+                elif action == "recycle":
+                    send2trash(item["src"])
+                    self._log_write(f"✓ 已移至資源回收桶：{item['src']}", "ok")
+                elif action == "perm":
+                    os.remove(item["src"])
+                    self._log_write(f"✓ 已永久刪除：{item['src']}", "ok")
+                ok += 1
+            except Exception as e:
+                err += 1
+                self._log_write(f"✗ 失敗：{item['src']}\n    原因：{e}", "err")
+            self.progress.config(value=i)
+
+        self._plan = []
+        msg = f"完成！成功 {ok} 個"
+        if err:
+            msg += f"，失敗 {err} 個"
+        self._log_write(f"\n=== {msg} ===", "dim")
+        self.status_var.set(msg)
+        self.count_lbl.config(text="")
+
+        if err:
+            messagebox.showwarning("部分失敗", f"{msg}\n詳細內容請見上方紀錄。")
+        else:
+            messagebox.showinfo("完成", msg)
 
     def _clear(self):
         self._plan = []
-        self.exec_btn.configure(state="disabled")
-        self.progress["value"] = 0
-        self.status_lbl.configure(text="")
-        self._clear_log()
-
-    def _parse_extensions(self):
-        raw = self.ext_var.get().strip()
-        if not raw:
-            return []
-        exts = [e.strip().lower() for e in raw.replace("，", ",").split(",") if e.strip()]
-        return [e if e.startswith(".") else "." + e for e in exts]
-
-    def _validate(self):
-        src = self.src_var.get().strip()
-        if not src:
-            messagebox.showwarning("缺少設定", "請選擇來源資料夾。")
-            return False
-        if not os.path.isdir(src):
-            messagebox.showwarning("路徑錯誤", "來源資料夾不存在。")
-            return False
-        if not self.dest_var.get().strip():
-            messagebox.showwarning("缺少設定", "請輸入目標資料夾名稱。")
-            return False
-        return True
-
-    def _build_plan(self, src, dest_base, exts, mode):
-        plan = []
-        for fname in os.listdir(src):
-            fpath = os.path.join(src, fname)
-            if not os.path.isfile(fpath):
-                continue
-            stem, ext = os.path.splitext(fname)
-            if exts and ext.lower() not in exts:
-                continue
-
-            if mode == "ext":
-                sub = ext.lstrip(".").upper() if ext else "其他"
-                target_dir = os.path.join(dest_base, sub)
-            elif mode == "name":
-                target_dir = os.path.join(dest_base, stem)
-            else:
-                target_dir = dest_base
-
-            final_name = fname
-            counter = 1
-            while os.path.exists(os.path.join(target_dir, final_name)):
-                final_name = f"{stem}_({counter}){ext}"
-                counter += 1
-
-            plan.append({
-                "src": fpath, "fname": fname,
-                "target_dir": target_dir, "final": final_name,
-                "renamed": final_name != fname
-            })
-        return plan
-
-    def _run_preview(self):
-        if not self._validate():
-            return
-        self._clear_log()
-        self._plan = []
-        self.exec_btn.configure(state="disabled")
-        self.progress["value"] = 0
-
-        src = self.src_var.get().strip()
-        dest_base = os.path.join(src, self.dest_var.get().strip())
-        exts = self._parse_extensions()
-        mode = self.mode_var.get()
-
-        mode_labels = {"ext": "依副檔名分類", "name": "依檔名建立資料夾", "flat": "全部集中放入"}
-        self._log(f"來源：{src}", "info")
-        self._log(f"目標：{dest_base}", "info")
-        self._log(f"模式：{mode_labels[mode]}", "info")
-        self._log(f"篩選：{', '.join(exts) if exts else '（全部副檔名）'}", "info")
-        self._log("─" * 60, "dim")
-
-        plan = self._build_plan(src, dest_base, exts, mode)
-        if not plan:
-            self._log("⚠  未找到符合條件的檔案。", "warn")
-            self.status_lbl.configure(text="0 個檔案")
-            return
-
-        for item in plan:
-            rename_note = f"  [重新命名 → {item['final']}]" if item["renamed"] else ""
-            self._log(f"  {item['fname']}{rename_note}", "")
-            self._log(f"    → {item['target_dir']}", "dim")
-
-        self._log("─" * 60, "dim")
-        self._log(f"共 {len(plan)} 個檔案可整理。", "info")
-        self.status_lbl.configure(text=f"預覽：{len(plan)} 個檔案")
-        self._plan = plan
-        self.exec_btn.configure(state="normal")
-
-    def _run_execute(self):
-        if not self._plan:
-            return
-        if self.dryrun_var.get():
-            messagebox.showinfo("乾跑模式",
-                                "目前為乾跑模式，不會實際移動檔案。\n請取消勾選「乾跑模式」後再執行。")
-            return
-        if not messagebox.askyesno("確認執行",
-                                   f"確定要移動 {len(self._plan)} 個檔案嗎？\n此操作無法復原。"):
-            return
-
-        self.preview_btn.configure(state="disabled")
-        self.exec_btn.configure(state="disabled")
-        self._clear_log()
-        self._log("開始執行整理…", "info")
-        self._log("─" * 60, "dim")
-
-        def worker():
-            ok = 0; fail = 0
-            total = len(self._plan)
-            for i, item in enumerate(self._plan):
-                try:
-                    os.makedirs(item["target_dir"], exist_ok=True)
-                    dst = os.path.join(item["target_dir"], item["final"])
-                    shutil.move(item["src"], dst)
-                    self._log(f"  ✓  {item['fname']}", "ok")
-                    ok += 1
-                except Exception as e:
-                    self._log(f"  ✗  {item['fname']}：{e}", "err")
-                    fail += 1
-                self.progress["value"] = int((i + 1) / total * 100)
-                self.update_idletasks()
-
-            self._log("─" * 60, "dim")
-            self._log(f"完成！成功 {ok} 個，失敗 {fail} 個。",
-                      "ok" if fail == 0 else "warn")
-            self.status_lbl.configure(text=f"完成：{ok} 成功 / {fail} 失敗")
-            self.preview_btn.configure(state="normal")
-            self._plan = []
-
-        threading.Thread(target=worker, daemon=True).start()
+        self._log_clear()
+        self.count_lbl.config(text="")
+        self.progress.config(value=0)
+        self.status_var.set("清單已清除。")
 
 
 if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+    App().mainloop()
